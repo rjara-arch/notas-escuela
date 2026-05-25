@@ -1,0 +1,879 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Sistema de Notas — Escuela México Valdivia</title>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f1f5f9;color:#1e293b;font-size:14px}
+button{cursor:pointer;font-family:inherit}
+input,select,textarea{font-family:inherit}
+@keyframes spin{to{transform:rotate(360deg)}}
+@keyframes fadein{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.fadein{animation:fadein .2s ease}
+::-webkit-scrollbar{width:6px;height:6px}
+::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:3px}
+@media print{
+  .no-print{display:none!important}
+  body{background:#fff}
+  .print-area{animation:none!important}
+}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const {useState,useEffect,useRef,useCallback,useMemo}=React;
+
+// ── Constantes ────────────────────────────────────────────────────────────────
+const API='/api';
+const MESES=['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+const CONCEPTUAL=['I','S','A'];
+const ROLES={admin:'Administrador',directivo:'Directivo',jefe:'Prof. Jefe',docente:'Docente'};
+const COLOR_ROL={admin:'#006847',directivo:'#1d4ed8',jefe:'#d97706',docente:'#7c3aed'};
+
+// ── Utilidades ────────────────────────────────────────────────────────────────
+function token(){return localStorage.getItem('notas_token')}
+async function api(method,path,body){
+  const r=await fetch(API+path,{
+    method,
+    headers:{'Content-Type':'application/json',...(token()?{'Authorization':'Bearer '+token()}:{})},
+    ...(body?{body:JSON.stringify(body)}:{})
+  });
+  if(r.status===401){localStorage.removeItem('notas_token');window.location.reload();}
+  if(!r.ok){const e=await r.json().catch(()=>({}));throw new Error(e.error||'Error')}
+  return r.json();
+}
+function fmt(n,dec=1){if(n===null||n===undefined||n==='')return '—';const f=parseFloat(n);if(isNaN(f))return n;return f.toFixed(dec)}
+function colorNota(n){
+  if(typeof n==='string'&&CONCEPTUAL.includes(n)){return n==='A'?'#15803d':n==='S'?'#ca8a04':'#dc2626'}
+  const f=parseFloat(n);if(isNaN(f))return '#64748b';
+  return f>=6?'#15803d':f>=4?'#ca8a04':'#dc2626';
+}
+function bgNota(n){
+  if(typeof n==='string'&&CONCEPTUAL.includes(n)){return n==='A'?'#dcfce7':n==='S'?'#fef9c3':'#fee2e2'}
+  const f=parseFloat(n);if(isNaN(f))return '#f8fafc';
+  return f>=6?'#dcfce7':f>=4?'#fef9c3':'#fee2e2';
+}
+function promNumerico(notas){
+  const nums=Object.values(notas).map(v=>parseFloat(v)).filter(n=>!isNaN(n));
+  if(!nums.length)return null;
+  return parseFloat((nums.reduce((s,v)=>s+v,0)/nums.length).toFixed(1));
+}
+
+// ── Componentes base ──────────────────────────────────────────────────────────
+function Spinner(){return <div style={{display:'flex',justifyContent:'center',padding:40}}><div style={{width:32,height:32,border:'3px solid #e2e8f0',borderTop:'3px solid #006847',borderRadius:'50%',animation:'spin .7s linear infinite'}}/></div>}
+function Alert({type,msg}){if(!msg)return null;const c={error:'#fee2e2',success:'#dcfce7',info:'#dbeafe'};return <div style={{background:c[type]||c.info,color:type==='error'?'#991b1b':type==='success'?'#166534':'#1e40af',padding:'10px 14px',borderRadius:8,marginBottom:12,fontSize:13}}>{msg}</div>}
+function Badge({color,bg,children}){return <span style={{background:bg||'#e2e8f0',color:color||'#475569',padding:'2px 8px',borderRadius:12,fontSize:11,fontWeight:600}}>{children}</span>}
+function Btn({onClick,color='#006847',outline,small,children,disabled,style={}}){
+  const base={padding:small?'5px 12px':'8px 16px',borderRadius:8,fontSize:small?12:13,fontWeight:600,border:'none',background:outline?'transparent':color,color:outline?color:'#fff',cursor:disabled?'not-allowed':'pointer',opacity:disabled?.5:1,...style};
+  if(outline){base.border=`1.5px solid ${color}`}
+  return <button style={base} onClick={onClick} disabled={disabled}>{children}</button>
+}
+function Modal({title,onClose,children,width=600}){
+  return <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,.45)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:1000,padding:16}}>
+    <div style={{background:'#fff',borderRadius:16,width:'100%',maxWidth:width,maxHeight:'90vh',overflowY:'auto',boxShadow:'0 20px 60px rgba(0,0,0,.25)'}}>
+      <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'18px 20px',borderBottom:'1px solid #f1f5f9'}}>
+        <h2 style={{fontSize:16,fontWeight:700,color:'#1e293b'}}>{title}</h2>
+        <button onClick={onClose} style={{border:'none',background:'none',fontSize:20,cursor:'pointer',color:'#94a3b8',lineHeight:1}}>×</button>
+      </div>
+      <div style={{padding:20}}>{children}</div>
+    </div>
+  </div>
+}
+function Field({label,req,children}){return <div style={{marginBottom:14}}>
+  <label style={{display:'block',fontSize:11,fontWeight:700,color:'#64748b',textTransform:'uppercase',letterSpacing:'.04em',marginBottom:4}}>{label}{req&&<span style={{color:'#dc2626',marginLeft:2}}>*</span>}</label>
+  {children}
+</div>}
+const inp={width:'100%',padding:'9px 11px',border:'1.5px solid #e2e8f0',borderRadius:8,fontSize:13,outline:'none',boxSizing:'border-box'};
+const sel={...inp,background:'#fff'};
+
+// ── Login ─────────────────────────────────────────────────────────────────────
+function Login({onLogin}){
+  const [u,setU]=useState('');const [p,setP]=useState('');const [err,setErr]=useState('');const [ld,setLd]=useState(false);
+  async function submit(){
+    setErr('');setLd(true);
+    try{const r=await api('POST','/login',{username:u,password:p});localStorage.setItem('notas_token',r.token);onLogin(r.user);}
+    catch(e){setErr(e.message);}finally{setLd(false);}
+  }
+  return <div style={{minHeight:'100vh',display:'flex',alignItems:'center',justifyContent:'center',background:'linear-gradient(135deg,#006847 0%,#004d35 100%)'}}>
+    <div style={{background:'#fff',borderRadius:20,padding:36,width:380,boxShadow:'0 20px 60px rgba(0,0,0,.3)'}}>
+      <div style={{textAlign:'center',marginBottom:28}}>
+        <div style={{width:56,height:56,background:'#006847',borderRadius:16,display:'inline-flex',alignItems:'center',justifyContent:'center',marginBottom:12}}>
+          <span style={{color:'#fff',fontSize:24}}>📚</span>
+        </div>
+        <h1 style={{fontSize:20,fontWeight:700,color:'#1e293b'}}>Sistema de Notas</h1>
+        <p style={{color:'#64748b',fontSize:13,marginTop:4}}>Escuela México Valdivia</p>
+      </div>
+      <Alert type="error" msg={err}/>
+      <Field label="Usuario" req><input style={inp} value={u} onChange={e=>setU(e.target.value)} onKeyDown={e=>e.key==='Enter'&&submit()} autoFocus/></Field>
+      <Field label="Contraseña" req><input style={inp} type="password" value={p} onChange={e=>setP(e.target.value)} onKeyDown={e=>e.key==='Enter'&&submit()}/></Field>
+      <Btn onClick={submit} disabled={ld||!u||!p} style={{width:'100%',marginTop:8,padding:'11px'}}>{ld?'Ingresando…':'Ingresar'}</Btn>
+    </div>
+  </div>
+}
+
+// ── Sidebar ───────────────────────────────────────────────────────────────────
+function Sidebar({user,view,setView,onLogout}){
+  const links=[
+    {id:'dashboard',label:'Inicio',icon:'🏠'},
+    {id:'notas',label:'Libro de Notas',icon:'📝'},
+    {id:'resumen',label:'Resumen Curso',icon:'📊'},
+    {id:'informe',label:'Informes',icon:'📄'},
+    ...(user.role==='admin'||user.role==='directivo'?[{id:'metricas',label:'Métricas',icon:'📈'}]:[]),
+    ...(user.role==='admin'?[
+      {id:'admin-users',label:'Usuarios',icon:'👥'},
+      {id:'admin-asignaturas',label:'Asignaturas',icon:'📚'},
+      {id:'admin-asignaciones',label:'Asignaciones',icon:'🔗'},
+    ]:[]),
+  ];
+  return <div style={{width:220,background:'#fff',borderRight:'1px solid #e2e8f0',display:'flex',flexDirection:'column',minHeight:'100vh',flexShrink:0}}>
+    <div style={{padding:'20px 16px',borderBottom:'1px solid #f1f5f9'}}>
+      <div style={{fontSize:15,fontWeight:700,color:'#006847'}}>📚 Sistema Notas</div>
+      <div style={{fontSize:11,color:'#94a3b8',marginTop:2}}>Escuela México · 2026</div>
+    </div>
+    <div style={{padding:'8px 8px',flex:1}}>
+      {links.map(l=><button key={l.id} onClick={()=>setView(l.id)} style={{display:'flex',alignItems:'center',gap:8,width:'100%',padding:'9px 12px',borderRadius:8,border:'none',background:view===l.id?'#f0fdf4':'transparent',color:view===l.id?'#006847':'#475569',fontWeight:view===l.id?600:400,fontSize:13,textAlign:'left',cursor:'pointer',marginBottom:2}}>
+        <span>{l.icon}</span><span>{l.label}</span>
+      </button>)}
+    </div>
+    <div style={{padding:'12px 16px',borderTop:'1px solid #f1f5f9'}}>
+      <div style={{fontSize:12,fontWeight:600,color:'#1e293b',marginBottom:2}}>{user.nombre}</div>
+      <div style={{marginBottom:8}}><Badge color={COLOR_ROL[user.role]} bg={COLOR_ROL[user.role]+'22'}>{ROLES[user.role]||user.role}</Badge></div>
+      <button onClick={onLogout} style={{fontSize:12,color:'#dc2626',border:'none',background:'none',cursor:'pointer',padding:0}}>Cerrar sesión</button>
+    </div>
+  </div>
+}
+
+// ── Dashboard ─────────────────────────────────────────────────────────────────
+function Dashboard({user}){
+  const [stats,setStats]=useState(null);
+  useEffect(()=>{api('GET','/stats').then(setStats).catch(()=>{});},[]);
+  const cards=[
+    {label:'Total alumnas',val:stats?.totalAlumnos??'—',icon:'👩‍🎓',color:'#006847'},
+    {label:'Notas registradas',val:stats?.totalNotas??'—',icon:'✏️',color:'#1d4ed8'},
+    {label:'Asignaturas activas',val:stats?.asignaturasActivas??'—',icon:'📚',color:'#7c3aed'},
+    {label:'Docentes activos',val:stats?.docentesActivos??'—',icon:'👩‍🏫',color:'#d97706'},
+  ];
+  return <div className="fadein">
+    <h1 style={{fontSize:22,fontWeight:700,color:'#1e293b',marginBottom:4}}>Bienvenido/a, {user.nombre.split(' ')[0]}</h1>
+    <p style={{color:'#64748b',marginBottom:24}}>Sistema de Notas · Año 2026</p>
+    <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(180px,1fr))',gap:16,marginBottom:32}}>
+      {cards.map(c=><div key={c.label} style={{background:'#fff',borderRadius:14,padding:'20px',boxShadow:'0 1px 3px rgba(0,0,0,.06)'}}>
+        <div style={{fontSize:28,marginBottom:8}}>{c.icon}</div>
+        <div style={{fontSize:28,fontWeight:700,color:c.color}}>{c.val}</div>
+        <div style={{fontSize:12,color:'#64748b',marginTop:2}}>{c.label}</div>
+      </div>)}
+    </div>
+    <div style={{background:'#fff',borderRadius:14,padding:20,boxShadow:'0 1px 3px rgba(0,0,0,.06)'}}>
+      <h3 style={{fontSize:14,fontWeight:700,marginBottom:12,color:'#1e293b'}}>Año escolar 2026</h3>
+      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12}}>
+        {[['1° semestre','Enero — Junio'],['2° semestre','Julio — Diciembre']].map(([s,f])=>
+          <div key={s} style={{background:'#f8fafc',borderRadius:10,padding:'14px 16px'}}>
+            <div style={{fontWeight:700,color:'#1e293b',fontSize:13}}>{s}</div>
+            <div style={{color:'#64748b',fontSize:12,marginTop:2}}>{f}</div>
+          </div>
+        )}
+      </div>
+    </div>
+  </div>
+}
+
+// ── Selector de curso/asignatura ──────────────────────────────────────────────
+function CursoSelector({user,onSelect,showAsignatura=true}){
+  const [cursos,setCursos]=useState([]);
+  const [asignaturas,setAsignaturas]=useState([]);
+  const [asignaciones,setAsignaciones]=useState([]);
+  const [grado,setGrado]=useState('');
+  const [curso,setCurso]=useState('');
+  const [asigId,setAsigId]=useState('');
+  const [sem,setSem]=useState('1');
+
+  useEffect(()=>{
+    api('GET','/cursos').then(setCursos);
+    api('GET','/asignaturas').then(setAsignaturas);
+    api('GET','/mis-asignaciones').then(setAsignaciones);
+  },[]);
+
+  // Cursos disponibles para este usuario
+  const cursosDisponibles=useMemo(()=>{
+    if(user.role==='admin'||user.role==='directivo') return cursos;
+    const mios=new Set(asignaciones.map(a=>`${a.grado}|${a.curso}`));
+    return cursos.filter(c=>mios.has(`${c.descGrado}|${c.curso}`));
+  },[cursos,asignaciones,user]);
+
+  // Asignaturas disponibles para el curso seleccionado
+  const asigDisponibles=useMemo(()=>{
+    if(!grado||!curso) return [];
+    if(user.role==='admin'||user.role==='directivo') return asignaturas;
+    return asignaciones.filter(a=>a.grado===grado&&a.curso===curso).map(a=>({id:a.asignatura_id,nombre:a.asignatura_nombre,tipo:a.tipo,nombre_corto:a.nombre_corto}));
+  },[grado,curso,asignaciones,asignaturas,user]);
+
+  function handleSelect(){
+    if(!grado||!curso||(showAsignatura&&!asigId)) return;
+    const asig=asignaturas.find(a=>a.id===parseInt(asigId));
+    onSelect({grado,curso,asigId:parseInt(asigId)||null,asig,semestre:parseInt(sem)});
+  }
+
+  return <div style={{background:'#fff',borderRadius:14,padding:20,boxShadow:'0 1px 3px rgba(0,0,0,.06)',marginBottom:20}}>
+    <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(160px,1fr))',gap:12,alignItems:'end'}}>
+      <Field label="Curso">
+        <select style={sel} value={`${grado}|${curso}`} onChange={e=>{const[g,c]=e.target.value.split('|');setGrado(g);setCurso(c);setAsigId('');}}>
+          <option value="|">— Seleccionar —</option>
+          {cursosDisponibles.map(c=><option key={`${c.descGrado}|${c.curso}`} value={`${c.descGrado}|${c.curso}`}>{c.descGrado} {c.curso}</option>)}
+        </select>
+      </Field>
+      {showAsignatura&&<Field label="Asignatura">
+        <select style={sel} value={asigId} onChange={e=>setAsigId(e.target.value)} disabled={!grado}>
+          <option value="">— Seleccionar —</option>
+          {asigDisponibles.map(a=><option key={a.id} value={a.id}>{a.nombre}</option>)}
+        </select>
+      </Field>}
+      <Field label="Semestre">
+        <select style={sel} value={sem} onChange={e=>setSem(e.target.value)}>
+          <option value="1">1° Semestre</option>
+          <option value="2">2° Semestre</option>
+        </select>
+      </Field>
+      <div style={{paddingBottom:0}}>
+        <Btn onClick={handleSelect} disabled={!grado||!curso||(showAsignatura&&!asigId)}>Ver</Btn>
+      </div>
+    </div>
+  </div>
+}
+
+// ── Celda de nota editable ─────────────────────────────────────────────────────
+function CeldaNota({valor,tipo,onSave,onDelete,readonly}){
+  const [editing,setEditing]=useState(false);
+  const [val,setVal]=useState(valor||'');
+  const ref=useRef();
+
+  useEffect(()=>{setVal(valor||'');},[valor]);
+  useEffect(()=>{if(editing&&ref.current)ref.current.focus();},[editing]);
+
+  function commit(){
+    setEditing(false);
+    const v=val.trim().toUpperCase();
+    if(!v){if(valor)onDelete();return;}
+    if(tipo==='conceptual'){
+      if(!CONCEPTUAL.includes(v)){setVal(valor||'');return;}
+    } else {
+      const n=parseFloat(v.replace(',','.'));
+      if(isNaN(n)||n<1||n>7){setVal(valor||'');return;}
+      onSave(n.toFixed(1));return;
+    }
+    onSave(v);
+  }
+
+  if(readonly){
+    return <div style={{textAlign:'center',color:colorNota(valor),fontWeight:valor?600:400,fontSize:13,padding:'6px 4px'}}>
+      {valor||<span style={{color:'#cbd5e1'}}>—</span>}
+    </div>
+  }
+
+  if(editing){
+    if(tipo==='conceptual'){
+      return <select ref={ref} style={{width:'100%',border:'2px solid #006847',borderRadius:6,padding:'4px',fontSize:13,background:'#fff',outline:'none'}}
+        value={val} onChange={e=>setVal(e.target.value)} onBlur={commit} onKeyDown={e=>{if(e.key==='Enter'||e.key==='Tab')commit()}}>
+        <option value="">—</option>
+        {CONCEPTUAL.map(c=><option key={c} value={c}>{c}</option>)}
+      </select>
+    }
+    return <input ref={ref} style={{width:'100%',border:'2px solid #006847',borderRadius:6,padding:'4px 6px',fontSize:13,textAlign:'center',outline:'none'}}
+      value={val} onChange={e=>setVal(e.target.value)}
+      onBlur={commit} onKeyDown={e=>{if(e.key==='Enter'||e.key==='Tab')commit();if(e.key==='Escape'){setVal(valor||'');setEditing(false);}}}
+      placeholder={tipo==='conceptual'?'I/S/A':'4.0'}/>
+  }
+
+  return <div onClick={()=>setEditing(true)} style={{cursor:'pointer',textAlign:'center',color:colorNota(valor),fontWeight:valor?600:400,fontSize:13,padding:'6px 4px',borderRadius:4,transition:'.15s',background:valor?bgNota(valor):'transparent'}}
+    title="Click para editar">
+    {valor||<span style={{color:'#e2e8f0',fontSize:12}}>+</span>}
+  </div>
+}
+
+// ── Libro de Notas ────────────────────────────────────────────────────────────
+function LibroNotas({user}){
+  const [params,setParams]=useState(null);
+  const [alumnos,setAlumnos]=useState([]);
+  const [loading,setLoading]=useState(false);
+  const [msg,setMsg]=useState('');
+  const [err,setErr]=useState('');
+  const [numNotas,setNumNotas]=useState(5);
+
+  useEffect(()=>{
+    if(!params) return;
+    setLoading(true);setErr('');
+    api('GET',`/notas/${params.asigId}/${encodeURIComponent(params.grado)}/${params.curso}/${params.semestre}`)
+      .then(data=>{setAlumnos(data);setLoading(false);})
+      .catch(e=>{setErr(e.message);setLoading(false);});
+  },[params]);
+
+  async function saveNota(studentId,numNota,valor){
+    try{
+      await api('POST','/notas',{student_id:studentId,asignatura_id:params.asigId,semestre:params.semestre,numero_nota:numNota,valor,grado:params.grado,curso:params.curso});
+      setAlumnos(prev=>prev.map(a=>a.id===studentId?{...a,notas:{...a.notas,[numNota]:valor}}:a));
+      setMsg('✓ Guardado');setTimeout(()=>setMsg(''),1500);
+    }catch(e){setErr(e.message);}
+  }
+
+  async function deleteNota(studentId,numNota){
+    try{
+      await api('DELETE','/notas',{student_id:studentId,asignatura_id:params.asigId,semestre:params.semestre,numero_nota:numNota,grado:params.grado,curso:params.curso});
+      setAlumnos(prev=>prev.map(a=>a.id===studentId?{...a,notas:{...a.notas,[numNota]:undefined}}:a));
+    }catch(e){setErr(e.message);}
+  }
+
+  const canWrite=params&&(user.role==='admin'||(user.role!=='directivo'));
+  const cols=Array.from({length:numNotas},(_,i)=>i+1);
+  const tipo=params?.asig?.tipo||'numerica';
+
+  return <div className="fadein">
+    <h1 style={{fontSize:20,fontWeight:700,marginBottom:16}}>📝 Libro de Notas</h1>
+    <CursoSelector user={user} onSelect={p=>{setParams(p);setAlumnos([]);}}/>
+    {params&&<>
+      <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:12,flexWrap:'wrap',gap:8}}>
+        <div>
+          <span style={{fontWeight:700,color:'#1e293b'}}>{params.grado} {params.curso}</span>
+          <span style={{margin:'0 8px',color:'#94a3b8'}}>·</span>
+          <span style={{color:'#006847',fontWeight:600}}>{params.asig?.nombre}</span>
+          <span style={{margin:'0 8px',color:'#94a3b8'}}>·</span>
+          <span style={{color:'#64748b'}}>{params.semestre}° Semestre</span>
+          {tipo==='conceptual'&&<Badge color='#7c3aed' bg='#ede9fe' style={{marginLeft:8}}>Conceptual</Badge>}
+        </div>
+        <div style={{display:'flex',gap:8,alignItems:'center'}}>
+          {msg&&<span style={{color:'#15803d',fontSize:12,fontWeight:600}}>{msg}</span>}
+          {tipo==='numerica'&&<div style={{display:'flex',alignItems:'center',gap:6}}>
+            <label style={{fontSize:12,color:'#64748b'}}>Columnas:</label>
+            <select style={{...sel,width:60}} value={numNotas} onChange={e=>setNumNotas(parseInt(e.target.value))}>
+              {[3,4,5,6,7,8,9,10].map(n=><option key={n} value={n}>{n}</option>)}
+            </select>
+          </div>}
+        </div>
+      </div>
+      <Alert type="error" msg={err}/>
+      {loading?<Spinner/>:<div style={{overflowX:'auto'}}>
+        <table style={{width:'100%',borderCollapse:'collapse',background:'#fff',borderRadius:12,overflow:'hidden',boxShadow:'0 1px 3px rgba(0,0,0,.06)'}}>
+          <thead>
+            <tr style={{background:'#f8fafc'}}>
+              <th style={{padding:'10px 14px',textAlign:'left',fontSize:11,fontWeight:700,color:'#64748b',textTransform:'uppercase',borderBottom:'1px solid #f1f5f9',width:32}}>#</th>
+              <th style={{padding:'10px 14px',textAlign:'left',fontSize:11,fontWeight:700,color:'#64748b',textTransform:'uppercase',borderBottom:'1px solid #f1f5f9'}}>Estudiante</th>
+              {cols.map(n=><th key={n} style={{padding:'10px 8px',textAlign:'center',fontSize:11,fontWeight:700,color:'#64748b',textTransform:'uppercase',borderBottom:'1px solid #f1f5f9',width:60}}>N{n}</th>)}
+              <th style={{padding:'10px 12px',textAlign:'center',fontSize:11,fontWeight:700,color:'#006847',textTransform:'uppercase',borderBottom:'1px solid #f1f5f9',width:70}}>Prom.</th>
+            </tr>
+          </thead>
+          <tbody>
+            {alumnos.map((a,i)=>{
+              const prom=tipo==='numerica'?promNumerico(a.notas):null;
+              return <tr key={a.id} style={{borderBottom:'1px solid #f8fafc',background:i%2===0?'#fff':'#fafafa'}}>
+                <td style={{padding:'4px 14px',color:'#94a3b8',fontSize:12}}>{i+1}</td>
+                <td style={{padding:'4px 14px',fontWeight:500,color:'#1e293b',fontSize:13}}>{a.apPaterno} {a.apMaterno} {a.nombres}</td>
+                {cols.map(n=><td key={n} style={{padding:'2px 4px',width:60}}>
+                  <CeldaNota valor={a.notas[n]} tipo={tipo} readonly={!canWrite}
+                    onSave={v=>saveNota(a.id,n,v)} onDelete={()=>deleteNota(a.id,n)}/>
+                </td>)}
+                <td style={{padding:'4px 12px',textAlign:'center',fontWeight:700,color:prom!==null?colorNota(prom):'#94a3b8',background:prom!==null?bgNota(prom):'transparent',fontSize:13}}>
+                  {tipo==='numerica'?(prom!==null?fmt(prom):'—'):(a.notas[Math.max(...Object.keys(a.notas).map(Number))]||'—')}
+                </td>
+              </tr>
+            })}
+            {tipo==='numerica'&&alumnos.length>0&&<tr style={{background:'#f0fdf4',borderTop:'2px solid #006847'}}>
+              <td colSpan={2} style={{padding:'8px 14px',fontWeight:700,color:'#006847',fontSize:12}}>PROMEDIO CURSO</td>
+              {cols.map(n=>{
+                const vals=alumnos.map(a=>parseFloat(a.notas[n])).filter(v=>!isNaN(v));
+                const avg=vals.length?parseFloat((vals.reduce((s,v)=>s+v,0)/vals.length).toFixed(1)):null;
+                return <td key={n} style={{textAlign:'center',fontWeight:700,color:'#006847',fontSize:12}}>{avg!==null?fmt(avg):'—'}</td>
+              })}
+              <td style={{textAlign:'center',fontWeight:700,color:'#006847',fontSize:13}}>
+                {(()=>{const ps=alumnos.map(a=>promNumerico(a.notas)).filter(p=>p!==null);return ps.length?fmt(ps.reduce((s,v)=>s+v,0)/ps.length):'—'})()}
+              </td>
+            </tr>}
+          </tbody>
+        </table>
+        {!loading&&alumnos.length===0&&<div style={{textAlign:'center',padding:40,color:'#94a3b8'}}>No hay estudiantes en este curso</div>}
+        {tipo==='numerica'&&alumnos.length>0&&<div style={{display:'flex',gap:12,marginTop:12,flexWrap:'wrap'}}>
+          {[['#fee2e2','#991b1b','1.0 – 3.9','En riesgo'],['#fef9c3','#854d0e','4.0 – 5.9','Suficiente'],['#dcfce7','#166534','6.0 – 7.0','Destacado']].map(([bg,c,rng,lbl])=>{
+            const cnt=alumnos.filter(a=>{const p=promNumerico(a.notas);if(p===null)return false;return rng.includes('3.9')?p<4:rng.includes('5.9')?p>=4&&p<6:p>=6}).length;
+            return <div key={lbl} style={{background:bg,borderRadius:8,padding:'8px 16px',display:'flex',gap:8,alignItems:'center'}}>
+              <span style={{color:c,fontWeight:700,fontSize:18}}>{cnt}</span>
+              <div><div style={{color:c,fontWeight:600,fontSize:11}}>{lbl}</div><div style={{color:c,fontSize:11}}>{rng}</div></div>
+            </div>
+          })}
+        </div>}
+      </div>}
+    </>}
+  </div>
+}
+
+// ── Resumen Curso ─────────────────────────────────────────────────────────────
+function ResumenCurso({user}){
+  const [params,setParams]=useState(null);
+  const [data,setData]=useState(null);
+  const [loading,setLoading]=useState(false);
+  const [err,setErr]=useState('');
+
+  useEffect(()=>{
+    if(!params) return;
+    setLoading(true);setErr('');
+    api('GET',`/resumen/${encodeURIComponent(params.grado)}/${params.curso}/${params.semestre}`)
+      .then(d=>{setData(d);setLoading(false);})
+      .catch(e=>{setErr(e.message);setLoading(false);});
+  },[params]);
+
+  return <div className="fadein">
+    <h1 style={{fontSize:20,fontWeight:700,marginBottom:16}}>📊 Resumen de Curso</h1>
+    <CursoSelector user={user} onSelect={p=>{setParams(p);setData(null);}} showAsignatura={false}/>
+    <Alert type="error" msg={err}/>
+    {loading?<Spinner/>:data&&<div style={{display:'flex',flexDirection:'column',gap:16}}>
+      <h2 style={{fontSize:15,fontWeight:700,color:'#1e293b'}}>{params.grado} {params.curso} — {params.semestre}° Semestre</h2>
+      {data.map(({asignatura,filas})=>{
+        const nums=filas.map(f=>typeof f.promedio==='number'?f.promedio:null).filter(p=>p!==null);
+        const promCurso=nums.length?parseFloat((nums.reduce((s,v)=>s+v,0)/nums.length).toFixed(1)):null;
+        const enRiesgo=nums.filter(p=>p<4).length;
+        const suficiente=nums.filter(p=>p>=4&&p<6).length;
+        const destacado=nums.filter(p=>p>=6).length;
+        return <div key={asignatura.id} style={{background:'#fff',borderRadius:12,padding:16,boxShadow:'0 1px 3px rgba(0,0,0,.06)'}}>
+          <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:12,flexWrap:'wrap',gap:8}}>
+            <div style={{display:'flex',alignItems:'center',gap:8}}>
+              <span style={{fontWeight:700,color:'#1e293b'}}>{asignatura.nombre}</span>
+              {asignatura.tipo==='conceptual'&&<Badge color='#7c3aed' bg='#ede9fe'>Conceptual</Badge>}
+            </div>
+            {asignatura.tipo==='numerica'&&promCurso!==null&&<div style={{display:'flex',gap:12,alignItems:'center'}}>
+              <span style={{fontSize:12,color:'#64748b'}}>Promedio curso:</span>
+              <span style={{fontWeight:700,fontSize:18,color:colorNota(promCurso)}}>{fmt(promCurso)}</span>
+              <div style={{display:'flex',gap:6}}>
+                <Badge color='#991b1b' bg='#fee2e2'>{enRiesgo} riesgo</Badge>
+                <Badge color='#854d0e' bg='#fef9c3'>{suficiente} suf.</Badge>
+                <Badge color='#166534' bg='#dcfce7'>{destacado} dest.</Badge>
+              </div>
+            </div>}
+          </div>
+          <div style={{overflowX:'auto'}}>
+            <table style={{width:'100%',borderCollapse:'collapse',fontSize:12}}>
+              <thead><tr style={{background:'#f8fafc'}}>
+                <th style={{padding:'6px 10px',textAlign:'left',fontWeight:700,color:'#64748b'}}>Estudiante</th>
+                {filas[0]?.notas.map((_,i)=><th key={i} style={{padding:'6px 8px',textAlign:'center',fontWeight:700,color:'#64748b',width:50}}>N{i+1}</th>)}
+                <th style={{padding:'6px 10px',textAlign:'center',fontWeight:700,color:'#006847',width:60}}>Prom.</th>
+              </tr></thead>
+              <tbody>{filas.map((f,i)=><tr key={f.alumno_id} style={{borderBottom:'1px solid #f8fafc',background:i%2?'#fafafa':'#fff'}}>
+                <td style={{padding:'5px 10px',fontWeight:500,color:'#1e293b'}}>{f.nombre}</td>
+                {f.notas.map((n,j)=><td key={j} style={{padding:'5px 8px',textAlign:'center',color:colorNota(n.valor),fontWeight:600}}>{n.valor||'—'}</td>)}
+                <td style={{padding:'5px 10px',textAlign:'center',fontWeight:700,color:f.promedio!==null?colorNota(f.promedio):'#94a3b8',background:f.promedio!==null?bgNota(f.promedio):'transparent'}}>
+                  {asignatura.tipo==='numerica'?(f.promedio!==null?fmt(f.promedio):'—'):(f.promedio||'—')}
+                </td>
+              </tr>)}</tbody>
+            </table>
+          </div>
+        </div>
+      })}
+    </div>}
+  </div>
+}
+
+// ── Informes ──────────────────────────────────────────────────────────────────
+function Informes({user}){
+  const [grado,setGrado]=useState('');
+  const [curso,setCurso]=useState('');
+  const [cursos,setCursos]=useState([]);
+  const [alumnos,setAlumnos]=useState([]);
+  const [selAlumno,setSelAlumno]=useState(null);
+  const [informe,setInforme]=useState(null);
+  const [loading,setLoading]=useState(false);
+  const [err,setErr]=useState('');
+
+  useEffect(()=>{api('GET','/cursos').then(setCursos);},[]);
+  useEffect(()=>{
+    if(!grado||!curso) return;
+    api('GET',`/alumnos/${encodeURIComponent(grado)}/${curso}`).then(setAlumnos).catch(()=>{});
+  },[grado,curso]);
+
+  async function cargarInforme(alumno){
+    setSelAlumno(alumno);setLoading(true);setErr('');
+    try{const d=await api('GET',`/informe/${alumno.id}`);setInforme(d);}
+    catch(e){setErr(e.message);}finally{setLoading(false);}
+  }
+
+  return <div className="fadein">
+    <div className="no-print">
+      <h1 style={{fontSize:20,fontWeight:700,marginBottom:16}}>📄 Informes de Evaluación</h1>
+      <div style={{background:'#fff',borderRadius:14,padding:20,boxShadow:'0 1px 3px rgba(0,0,0,.06)',marginBottom:20}}>
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:12}}>
+          <Field label="Curso">
+            <select style={sel} value={`${grado}|${curso}`} onChange={e=>{const[g,c]=e.target.value.split('|');setGrado(g);setCurso(c);setAlumnos([]);setInforme(null);}}>
+              <option value="|">— Seleccionar —</option>
+              {cursos.map(c=><option key={`${c.descGrado}|${c.curso}`} value={`${c.descGrado}|${c.curso}`}>{c.descGrado} {c.curso}</option>)}
+            </select>
+          </Field>
+          <Field label="Estudiante">
+            <select style={sel} value={selAlumno?.id||''} onChange={e=>{const a=alumnos.find(al=>al.id===parseInt(e.target.value));if(a)cargarInforme(a);}}>
+              <option value="">— Seleccionar —</option>
+              {alumnos.map(a=><option key={a.id} value={a.id}>{a.apPaterno} {a.nombres}</option>)}
+            </select>
+          </Field>
+        </div>
+      </div>
+      <Alert type="error" msg={err}/>
+    </div>
+    {loading?<Spinner/>:informe&&<InformeView informe={informe}/>}
+  </div>
+}
+
+function InformeView({informe}){
+  const {alumno,informe:asigs,pctAsistencia,observaciones}=informe;
+  const numericas=asigs.filter(a=>a.asignatura.tipo==='numerica');
+  const conceptuales=asigs.filter(a=>a.asignatura.tipo==='conceptual');
+  const promediosNum=numericas.map(a=>a.promFinal).filter(p=>typeof p==='number');
+  const promGeneral=promediosNum.length?parseFloat((promediosNum.reduce((s,v)=>s+v,0)/promediosNum.length).toFixed(1)):null;
+
+  return <div className="print-area" style={{background:'#fff',borderRadius:14,padding:28,maxWidth:800,margin:'0 auto',boxShadow:'0 1px 3px rgba(0,0,0,.06)'}}>
+    <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:20,flexWrap:'wrap',gap:12}}>
+      <div>
+        <div style={{fontSize:16,fontWeight:700,color:'#006847'}}>Escuela México Valdivia</div>
+        <div style={{fontSize:12,color:'#64748b'}}>Informe de Evaluación · Año 2026</div>
+      </div>
+      <Btn onClick={()=>window.print()} small color="#1d4ed8" style={{}} className="no-print">🖨 Imprimir</Btn>
+    </div>
+    <div style={{background:'#f8fafc',borderRadius:10,padding:16,marginBottom:20,display:'grid',gridTemplateColumns:'1fr 1fr',gap:8}}>
+      <div><span style={{fontSize:11,color:'#64748b',fontWeight:700,textTransform:'uppercase'}}>Estudiante</span><div style={{fontSize:14,fontWeight:700,color:'#1e293b',marginTop:2}}>{alumno.apPaterno} {alumno.apMaterno} {alumno.nombres}</div></div>
+      <div><span style={{fontSize:11,color:'#64748b',fontWeight:700,textTransform:'uppercase'}}>Curso</span><div style={{fontSize:14,fontWeight:600,color:'#1e293b',marginTop:2}}>{alumno.descGrado} {alumno.curso}</div></div>
+      <div><span style={{fontSize:11,color:'#64748b',fontWeight:700,textTransform:'uppercase'}}>RUN</span><div style={{fontSize:13,color:'#1e293b',marginTop:2}}>{alumno.run}-{alumno.dv}</div></div>
+      <div><span style={{fontSize:11,color:'#64748b',fontWeight:700,textTransform:'uppercase'}}>Fecha</span><div style={{fontSize:13,color:'#1e293b',marginTop:2}}>{new Date().toLocaleDateString('es-CL',{day:'numeric',month:'long',year:'numeric'})}</div></div>
+    </div>
+    <table style={{width:'100%',borderCollapse:'collapse',marginBottom:20}}>
+      <thead><tr style={{background:'#006847',color:'#fff'}}>
+        <th style={{padding:'8px 12px',textAlign:'left',fontSize:12}}>Asignatura</th>
+        {[...Array(5)].map((_,i)=><th key={i} style={{padding:'8px 6px',textAlign:'center',fontSize:11,width:42}}>N{i+1}</th>)}
+        <th style={{padding:'8px 6px',textAlign:'center',fontSize:11,width:48}}>P.1</th>
+        {[...Array(5)].map((_,i)=><th key={i} style={{padding:'8px 6px',textAlign:'center',fontSize:11,width:42}}>N{i+6}</th>)}
+        <th style={{padding:'8px 6px',textAlign:'center',fontSize:11,width:48}}>P.2</th>
+        <th style={{padding:'8px 8px',textAlign:'center',fontSize:11,width:52}}>Final</th>
+      </tr></thead>
+      <tbody>{asigs.map((a,i)=>{
+        const n1=[1,2,3,4,5].map(n=>a.notas1.find(x=>x.numero_nota===n)?.valor||'');
+        const n2=[6,7,8,9,10].map(n=>a.notas2.find(x=>x.numero_nota===n)?.valor||'');
+        return <tr key={a.asignatura.id} style={{background:i%2?'#fafafa':'#fff',borderBottom:'1px solid #f1f5f9'}}>
+          <td style={{padding:'6px 12px',fontSize:12,fontWeight:500,color:'#1e293b'}}>{a.asignatura.nombre_corto}</td>
+          {n1.map((v,j)=><td key={j} style={{padding:'6px',textAlign:'center',fontSize:12,color:colorNota(v)}}>{v||'—'}</td>)}
+          <td style={{padding:'6px',textAlign:'center',fontWeight:700,fontSize:12,color:a.prom1!==null?colorNota(a.prom1):'#94a3b8'}}>{a.prom1??'—'}</td>
+          {n2.map((v,j)=><td key={j} style={{padding:'6px',textAlign:'center',fontSize:12,color:colorNota(v)}}>{v||'—'}</td>)}
+          <td style={{padding:'6px',textAlign:'center',fontWeight:700,fontSize:12,color:a.prom2!==null?colorNota(a.prom2):'#94a3b8'}}>{a.prom2??'—'}</td>
+          <td style={{padding:'6px 8px',textAlign:'center',fontWeight:700,fontSize:13,color:a.promFinal!==null?colorNota(a.promFinal):'#94a3b8',background:a.promFinal!==null?bgNota(a.promFinal):'transparent'}}>{a.promFinal??'—'}</td>
+        </tr>
+      })}</tbody>
+    </table>
+    <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:20}}>
+      <div style={{background:bgNota(promGeneral),borderRadius:10,padding:'14px 18px',textAlign:'center'}}>
+        <div style={{fontSize:11,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:4}}>Promedio General</div>
+        <div style={{fontSize:32,fontWeight:700,color:promGeneral?colorNota(promGeneral):'#94a3b8'}}>{promGeneral??'—'}</div>
+      </div>
+      <div style={{background:pctAsistencia>=85?'#dcfce7':pctAsistencia>=75?'#fef9c3':'#fee2e2',borderRadius:10,padding:'14px 18px',textAlign:'center'}}>
+        <div style={{fontSize:11,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:4}}>% Asistencia</div>
+        <div style={{fontSize:32,fontWeight:700,color:pctAsistencia>=85?'#166534':pctAsistencia>=75?'#854d0e':'#991b1b'}}>{pctAsistencia!==null?pctAsistencia+'%':'—'}</div>
+      </div>
+    </div>
+    {observaciones?.length>0&&<div style={{marginBottom:16}}>
+      <div style={{fontSize:11,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:8}}>Observaciones</div>
+      {observaciones.map(o=><div key={o.id} style={{background:'#f8fafc',borderRadius:8,padding:'8px 12px',marginBottom:6,fontSize:12,color:'#1e293b'}}>{o.texto}</div>)}
+    </div>}
+    <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:24,marginTop:24,paddingTop:20,borderTop:'1px solid #e2e8f0'}}>
+      <div style={{textAlign:'center'}}><div style={{borderTop:'1px solid #1e293b',paddingTop:8,fontSize:11,color:'#64748b'}}>Firma Profesor/a Jefe</div></div>
+      <div style={{textAlign:'center'}}><div style={{borderTop:'1px solid #1e293b',paddingTop:8,fontSize:11,color:'#64748b'}}>Firma Director/a</div></div>
+    </div>
+  </div>
+}
+
+// ── Métricas ──────────────────────────────────────────────────────────────────
+function Metricas({user}){
+  const [data,setData]=useState(null);
+  useEffect(()=>{api('GET','/metricas').then(setData).catch(()=>{});},[]);
+  if(!data) return <Spinner/>;
+  return <div className="fadein">
+    <h1 style={{fontSize:20,fontWeight:700,marginBottom:16}}>📈 Métricas Generales</h1>
+    <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(220px,1fr))',gap:12}}>
+      {data.map(m=><div key={`${m.grado}${m.curso}`} style={{background:'#fff',borderRadius:12,padding:16,boxShadow:'0 1px 3px rgba(0,0,0,.06)'}}>
+        <div style={{fontWeight:700,fontSize:13,color:'#1e293b',marginBottom:8}}>{m.grado} {m.curso}</div>
+        <div style={{fontSize:11,color:'#64748b',marginBottom:4}}>Total alumnas: <strong>{m.total}</strong></div>
+        <div style={{fontSize:24,fontWeight:700,color:m.promedio?colorNota(m.promedio):'#94a3b8',marginBottom:8}}>{m.promedio??'—'}</div>
+        <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+          {m.enRiesgo>0&&<Badge color='#991b1b' bg='#fee2e2'>{m.enRiesgo} riesgo</Badge>}
+          {m.sinNotas>0&&<Badge color='#475569' bg='#f1f5f9'>{m.sinNotas} sin notas</Badge>}
+        </div>
+      </div>)}
+    </div>
+  </div>
+}
+
+// ── Admin Usuarios ────────────────────────────────────────────────────────────
+function AdminUsers(){
+  const [users,setUsers]=useState([]);
+  const [modal,setModal]=useState(null);
+  const [form,setForm]=useState({nombre:'',username:'',password:'',email:'',role:'docente'});
+  const [pwdModal,setPwdModal]=useState(null);
+  const [pwd,setPwd]=useState('');
+  const [err,setErr]=useState('');
+  const [msg,setMsg]=useState('');
+
+  useEffect(()=>{api('GET','/users').then(setUsers);},[]);
+
+  async function crear(){
+    setErr('');
+    try{const u=await api('POST','/users',form);setUsers(p=>[...p,u]);setModal(null);setMsg('Usuario creado');}
+    catch(e){setErr(e.message);}
+  }
+  async function toggle(id){
+    const u=await api('PATCH',`/users/${id}/toggle`);setUsers(p=>p.map(x=>x.id===id?u:x));
+  }
+  async function cambiarPwd(){
+    try{await api('PATCH',`/users/${pwdModal}/password`,{password:pwd});setPwdModal(null);setPwd('');setMsg('Contraseña actualizada');}
+    catch(e){setErr(e.message);}
+  }
+
+  return <div className="fadein">
+    <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:16}}>
+      <h1 style={{fontSize:20,fontWeight:700}}>👥 Usuarios</h1>
+      <Btn onClick={()=>setModal(true)}>+ Nuevo usuario</Btn>
+    </div>
+    {msg&&<Alert type="success" msg={msg}/>}
+    <div style={{background:'#fff',borderRadius:14,boxShadow:'0 1px 3px rgba(0,0,0,.06)',overflow:'hidden'}}>
+      <table style={{width:'100%',borderCollapse:'collapse'}}>
+        <thead><tr style={{background:'#f8fafc'}}>
+          {['Nombre','Usuario','Email','Rol','Estado','Acciones'].map(h=><th key={h} style={{padding:'10px 14px',textAlign:'left',fontSize:11,fontWeight:700,color:'#64748b',textTransform:'uppercase'}}>{h}</th>)}
+        </tr></thead>
+        <tbody>{users.map((u,i)=><tr key={u.id} style={{borderBottom:'1px solid #f8fafc',background:i%2?'#fafafa':'#fff'}}>
+          <td style={{padding:'10px 14px',fontWeight:500}}>{u.nombre}</td>
+          <td style={{padding:'10px 14px',color:'#64748b',fontFamily:'monospace'}}>{u.username}</td>
+          <td style={{padding:'10px 14px',color:'#64748b',fontSize:12}}>{u.email||'—'}</td>
+          <td style={{padding:'10px 14px'}}><Badge color={COLOR_ROL[u.role]} bg={COLOR_ROL[u.role]+'22'}>{ROLES[u.role]}</Badge></td>
+          <td style={{padding:'10px 14px'}}><Badge color={u.active?'#166534':'#991b1b'} bg={u.active?'#dcfce7':'#fee2e2'}>{u.active?'Activo':'Inactivo'}</Badge></td>
+          <td style={{padding:'10px 14px'}}>
+            <div style={{display:'flex',gap:6}}>
+              <Btn small outline color="#006847" onClick={()=>toggle(u.id)}>{u.active?'Desactivar':'Activar'}</Btn>
+              <Btn small outline color="#1d4ed8" onClick={()=>{setPwdModal(u.id);setPwd('');}}>Contraseña</Btn>
+            </div>
+          </td>
+        </tr>)}</tbody>
+      </table>
+    </div>
+    {modal&&<Modal title="Nuevo usuario" onClose={()=>setModal(null)}>
+      <Alert type="error" msg={err}/>
+      {[['Nombre completo','nombre','text',true],['Usuario (sin espacios)','username','text',true],['Contraseña','password','password',true],['Email institucional','email','email',false]].map(([l,f,t,r])=>
+        <Field key={f} label={l} req={r}><input style={inp} type={t} value={form[f]} onChange={e=>setForm(p=>({...p,[f]:e.target.value}))}/></Field>
+      )}
+      <Field label="Rol">
+        <select style={sel} value={form.role} onChange={e=>setForm(p=>({...p,role:e.target.value}))}>
+          {Object.entries(ROLES).map(([k,v])=><option key={k} value={k}>{v}</option>)}
+        </select>
+      </Field>
+      <div style={{display:'flex',gap:8,justifyContent:'flex-end',marginTop:8}}>
+        <Btn outline color="#64748b" onClick={()=>setModal(null)}>Cancelar</Btn>
+        <Btn onClick={crear}>Crear usuario</Btn>
+      </div>
+    </Modal>}
+    {pwdModal&&<Modal title="Cambiar contraseña" onClose={()=>setPwdModal(null)} width={360}>
+      <Alert type="error" msg={err}/>
+      <Field label="Nueva contraseña" req><input style={inp} type="password" value={pwd} onChange={e=>setPwd(e.target.value)}/></Field>
+      <div style={{display:'flex',gap:8,justifyContent:'flex-end',marginTop:8}}>
+        <Btn outline color="#64748b" onClick={()=>setPwdModal(null)}>Cancelar</Btn>
+        <Btn onClick={cambiarPwd}>Guardar</Btn>
+      </div>
+    </Modal>}
+  </div>
+}
+
+// ── Admin Asignaturas ─────────────────────────────────────────────────────────
+function AdminAsignaturas(){
+  const [asigs,setAsigs]=useState([]);
+  const [modal,setModal]=useState(null);
+  const [form,setForm]=useState({nombre:'',nombre_corto:'',tipo:'numerica',niveles:'todos',orden:99});
+  const [err,setErr]=useState('');
+
+  useEffect(()=>{api('GET','/asignaturas').then(setAsigs);},[]);
+
+  async function crear(){
+    setErr('');
+    try{const a=await api('POST','/asignaturas',form);setAsigs(p=>[...p,a]);setModal(null);}
+    catch(e){setErr(e.message);}
+  }
+  async function toggleActiva(id,activa){
+    const a=await api('PATCH',`/asignaturas/${id}`,{activa:activa?0:1});
+    setAsigs(p=>p.map(x=>x.id===id?a:x));
+  }
+
+  return <div className="fadein">
+    <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:16}}>
+      <h1 style={{fontSize:20,fontWeight:700}}>📚 Asignaturas</h1>
+      <Btn onClick={()=>setModal(true)}>+ Nueva asignatura</Btn>
+    </div>
+    <div style={{background:'#fff',borderRadius:14,boxShadow:'0 1px 3px rgba(0,0,0,.06)',overflow:'hidden'}}>
+      <table style={{width:'100%',borderCollapse:'collapse'}}>
+        <thead><tr style={{background:'#f8fafc'}}>
+          {['Orden','Nombre','Corto','Tipo','Niveles','Estado'].map(h=><th key={h} style={{padding:'10px 14px',textAlign:'left',fontSize:11,fontWeight:700,color:'#64748b',textTransform:'uppercase'}}>{h}</th>)}
+        </tr></thead>
+        <tbody>{asigs.map((a,i)=><tr key={a.id} style={{borderBottom:'1px solid #f8fafc',background:i%2?'#fafafa':'#fff',opacity:a.activa?1:.6}}>
+          <td style={{padding:'10px 14px',color:'#94a3b8'}}>{a.orden}</td>
+          <td style={{padding:'10px 14px',fontWeight:500}}>{a.nombre}</td>
+          <td style={{padding:'10px 14px',color:'#64748b'}}>{a.nombre_corto}</td>
+          <td style={{padding:'10px 14px'}}><Badge color={a.tipo==='conceptual'?'#7c3aed':'#006847'} bg={a.tipo==='conceptual'?'#ede9fe':'#f0fdf4'}>{a.tipo}</Badge></td>
+          <td style={{padding:'10px 14px',color:'#64748b'}}>{a.niveles}</td>
+          <td style={{padding:'10px 14px'}}><Btn small outline color={a.activa?'#dc2626':'#006847'} onClick={()=>toggleActiva(a.id,a.activa)}>{a.activa?'Desactivar':'Activar'}</Btn></td>
+        </tr>)}</tbody>
+      </table>
+    </div>
+    {modal&&<Modal title="Nueva asignatura" onClose={()=>setModal(null)} width={480}>
+      <Alert type="error" msg={err}/>
+      <Field label="Nombre completo" req><input style={inp} value={form.nombre} onChange={e=>setForm(p=>({...p,nombre:e.target.value}))}/></Field>
+      <Field label="Nombre corto (para tablas)"><input style={inp} value={form.nombre_corto} onChange={e=>setForm(p=>({...p,nombre_corto:e.target.value})) } placeholder="Ej: Lenguaje"/></Field>
+      <Field label="Tipo de evaluación">
+        <select style={sel} value={form.tipo} onChange={e=>setForm(p=>({...p,tipo:e.target.value}))}>
+          <option value="numerica">Numérica (1.0 – 7.0)</option>
+          <option value="conceptual">Conceptual (I / S / A)</option>
+        </select>
+      </Field>
+      <Field label="Niveles">
+        <select style={sel} value={form.niveles} onChange={e=>setForm(p=>({...p,niveles:e.target.value}))}>
+          <option value="todos">Todos los cursos</option>
+          <option value="1-6">1° a 6° básico</option>
+          <option value="7-8">7° y 8° básico</option>
+        </select>
+      </Field>
+      <Field label="Orden (número)"><input style={inp} type="number" value={form.orden} onChange={e=>setForm(p=>({...p,orden:parseInt(e.target.value)}))}/></Field>
+      <div style={{display:'flex',gap:8,justifyContent:'flex-end',marginTop:8}}>
+        <Btn outline color="#64748b" onClick={()=>setModal(null)}>Cancelar</Btn>
+        <Btn onClick={crear}>Crear asignatura</Btn>
+      </div>
+    </Modal>}
+  </div>
+}
+
+// ── Admin Asignaciones ────────────────────────────────────────────────────────
+function AdminAsignaciones(){
+  const [asignaciones,setAsignaciones]=useState([]);
+  const [users,setUsers]=useState([]);
+  const [asigs,setAsigs]=useState([]);
+  const [cursos,setCursos]=useState([]);
+  const [modal,setModal]=useState(false);
+  const [form,setForm]=useState({user_id:'',asignatura_id:'',grado:'',curso:'',es_jefe:false});
+  const [err,setErr]=useState('');
+  const [filtroDoc,setFiltroDoc]=useState('');
+
+  useEffect(()=>{
+    api('GET','/asignaciones').then(setAsignaciones);
+    api('GET','/users').then(u=>setUsers(u.filter(x=>x.active)));
+    api('GET','/asignaturas').then(setAsigs);
+    api('GET','/cursos').then(setCursos);
+  },[]);
+
+  async function crear(){
+    setErr('');
+    try{await api('POST','/asignaciones',{...form,user_id:parseInt(form.user_id),asignatura_id:parseInt(form.asignatura_id)});
+      const d=await api('GET','/asignaciones');setAsignaciones(d);setModal(false);}
+    catch(e){setErr(e.message);}
+  }
+  async function eliminar(id){
+    await api('DELETE',`/asignaciones/${id}`);setAsignaciones(p=>p.filter(a=>a.id!==id));
+  }
+
+  const filtradas=asignaciones.filter(a=>!filtroDoc||a.user_id===parseInt(filtroDoc));
+
+  return <div className="fadein">
+    <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:16,flexWrap:'wrap',gap:8}}>
+      <h1 style={{fontSize:20,fontWeight:700}}>🔗 Asignaciones Docente–Asignatura</h1>
+      <Btn onClick={()=>setModal(true)}>+ Nueva asignación</Btn>
+    </div>
+    <div style={{background:'#fff',borderRadius:10,padding:14,marginBottom:16,boxShadow:'0 1px 3px rgba(0,0,0,.06)'}}>
+      <Field label="Filtrar por docente">
+        <select style={{...sel,maxWidth:300}} value={filtroDoc} onChange={e=>setFiltroDoc(e.target.value)}>
+          <option value="">Todos los docentes</option>
+          {users.map(u=><option key={u.id} value={u.id}>{u.nombre}</option>)}
+        </select>
+      </Field>
+    </div>
+    <div style={{background:'#fff',borderRadius:14,boxShadow:'0 1px 3px rgba(0,0,0,.06)',overflow:'hidden'}}>
+      <table style={{width:'100%',borderCollapse:'collapse'}}>
+        <thead><tr style={{background:'#f8fafc'}}>
+          {['Docente','Asignatura','Curso','Jefe',''].map(h=><th key={h} style={{padding:'10px 14px',textAlign:'left',fontSize:11,fontWeight:700,color:'#64748b',textTransform:'uppercase'}}>{h}</th>)}
+        </tr></thead>
+        <tbody>{filtradas.map((a,i)=><tr key={a.id} style={{borderBottom:'1px solid #f8fafc',background:i%2?'#fafafa':'#fff'}}>
+          <td style={{padding:'10px 14px',fontWeight:500}}>{a.docente_nombre}</td>
+          <td style={{padding:'10px 14px',color:'#64748b'}}>{a.asignatura_nombre}</td>
+          <td style={{padding:'10px 14px',fontWeight:600,color:'#006847'}}>{a.grado} {a.curso}</td>
+          <td style={{padding:'10px 14px'}}>{a.es_jefe?<Badge color='#d97706' bg='#fef9c3'>Jefe</Badge>:'—'}</td>
+          <td style={{padding:'10px 14px'}}><Btn small outline color="#dc2626" onClick={()=>eliminar(a.id)}>Eliminar</Btn></td>
+        </tr>)}</tbody>
+      </table>
+      {filtradas.length===0&&<div style={{textAlign:'center',padding:32,color:'#94a3b8'}}>No hay asignaciones</div>}
+    </div>
+    {modal&&<Modal title="Nueva asignación" onClose={()=>setModal(false)} width={480}>
+      <Alert type="error" msg={err}/>
+      <Field label="Docente" req>
+        <select style={sel} value={form.user_id} onChange={e=>setForm(p=>({...p,user_id:e.target.value}))}>
+          <option value="">— Seleccionar —</option>
+          {users.map(u=><option key={u.id} value={u.id}>{u.nombre} ({ROLES[u.role]})</option>)}
+        </select>
+      </Field>
+      <Field label="Asignatura" req>
+        <select style={sel} value={form.asignatura_id} onChange={e=>setForm(p=>({...p,asignatura_id:e.target.value}))}>
+          <option value="">— Seleccionar —</option>
+          {asigs.map(a=><option key={a.id} value={a.id}>{a.nombre}</option>)}
+        </select>
+      </Field>
+      <Field label="Curso" req>
+        <select style={sel} value={`${form.grado}|${form.curso}`} onChange={e=>{const[g,c]=e.target.value.split('|');setForm(p=>({...p,grado:g,curso:c}))}}>
+          <option value="|">— Seleccionar —</option>
+          {cursos.map(c=><option key={`${c.descGrado}|${c.curso}`} value={`${c.descGrado}|${c.curso}`}>{c.descGrado} {c.curso}</option>)}
+        </select>
+      </Field>
+      <label style={{display:'flex',alignItems:'center',gap:8,cursor:'pointer',marginBottom:16}}>
+        <input type="checkbox" checked={form.es_jefe} onChange={e=>setForm(p=>({...p,es_jefe:e.target.checked}))} style={{width:16,height:16}}/>
+        <span style={{fontSize:13,color:'#1e293b'}}>Es Profesor Jefe de este curso</span>
+      </label>
+      <div style={{display:'flex',gap:8,justifyContent:'flex-end'}}>
+        <Btn outline color="#64748b" onClick={()=>setModal(false)}>Cancelar</Btn>
+        <Btn onClick={crear}>Guardar asignación</Btn>
+      </div>
+    </Modal>}
+  </div>
+}
+
+// ── App principal ─────────────────────────────────────────────────────────────
+function App(){
+  const [user,setUser]=useState(null);
+  const [view,setView]=useState('dashboard');
+  const [loading,setLoading]=useState(true);
+
+  useEffect(()=>{
+    if(!token()){setLoading(false);return;}
+    api('GET','/me').then(u=>{setUser(u);setLoading(false);}).catch(()=>{localStorage.removeItem('notas_token');setLoading(false);});
+  },[]);
+
+  if(loading) return <div style={{minHeight:'100vh',display:'flex',alignItems:'center',justifyContent:'center'}}><Spinner/></div>;
+  if(!user) return <Login onLogin={u=>{setUser(u);setView('dashboard');}}/>;
+
+  function logout(){localStorage.removeItem('notas_token');setUser(null);}
+
+  const views={
+    dashboard:<Dashboard user={user}/>,
+    notas:<LibroNotas user={user}/>,
+    resumen:<ResumenCurso user={user}/>,
+    informe:<Informes user={user}/>,
+    metricas:<Metricas user={user}/>,
+    'admin-users':<AdminUsers/>,
+    'admin-asignaturas':<AdminAsignaturas/>,
+    'admin-asignaciones':<AdminAsignaciones/>,
+  };
+
+  return <div style={{display:'flex',minHeight:'100vh'}}>
+    <Sidebar user={user} view={view} setView={setView} onLogout={logout}/>
+    <div style={{flex:1,padding:28,overflowY:'auto'}}>
+      {views[view]||<Dashboard user={user}/>}
+    </div>
+  </div>
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+</body>
+</html>
