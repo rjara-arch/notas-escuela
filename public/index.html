@@ -583,10 +583,10 @@ function InformeView({informe,semestre=1,profJefe:profJefeInit='',compact=false}
   useEffect(()=>{setProfJefe(profJefeInit);},[profJefeInit]);
 
   // Calcular max notas dinámicamente - solo columnas con datos
-  const maxNotas1=Math.max(0,...asigs.map(a=>Math.max(...a.notas1.map(n=>n.numero_nota),0)));
-  const maxNotas2=Math.max(0,...asigs.map(a=>Math.max(...a.notas2.map(n=>n.numero_nota),0)));
-  const cols1=semestre!==2?Math.max(maxNotas1,3):0;
-  const cols2=semestre!==1?Math.max(maxNotas2,3):0;
+  const maxNotas1=asigs.reduce((m,a)=>Math.max(m,...a.notas1.map(n=>n.numero_nota),0),0);
+  const maxNotas2=asigs.reduce((m,a)=>Math.max(m,...a.notas2.map(n=>n.numero_nota),0),0);
+  const cols1=Math.max(maxNotas1,3);
+  const cols2=Math.max(maxNotas2,3);
 
   const numericas=asigs.filter(a=>a.asignatura.tipo==='numerica');
   const promediosNum=numericas.map(a=>{
