@@ -195,10 +195,6 @@ app.get('/api/cursos', auth, (req, res) => {
     SELECT DISTINCT descGrado, curso, nivelMatricula, codGrado
     FROM students
     WHERE fechaRetiro='1900-01-01' OR fechaRetiro IS NULL OR fechaRetiro=''
-    ORDER BY
-      CASE nivelMatricula WHEN 'P' THEN 0 ELSE 1 END,
-      CAST(codGrado AS INTEGER),
-      curso
   `).all();
   // Deduplicar por descGrado+curso
   const seen = new Set();
@@ -206,6 +202,21 @@ app.get('/api/cursos', auth, (req, res) => {
     const key = c.descGrado+'|'+c.curso;
     if(seen.has(key)) return false;
     seen.add(key); return true;
+  });
+  // Ordenar manualmente con orden correcto
+  const orden = [
+    '1er nivel de Transición (Pre-kinder)',
+    '2° nivel de Transición (Kinder)',
+    '1° básico','2° básico','3° básico','4° básico',
+    '5° básico','6° básico','7° básico','8° básico'
+  ];
+  unique.sort((a,b) => {
+    const ia = orden.indexOf(a.descGrado);
+    const ib = orden.indexOf(b.descGrado);
+    const oa = ia===-1 ? 99 : ia;
+    const ob = ib===-1 ? 99 : ib;
+    if(oa !== ob) return oa - ob;
+    return a.curso.localeCompare(b.curso);
   });
   res.json(unique);
 });
