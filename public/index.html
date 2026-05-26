@@ -868,13 +868,18 @@ function Asistencia({user}){
       api('GET',`/asistencia/resumen/${encodeURIComponent(grado)}/${curso}`)
     ]).then(([als,res])=>{
       setAlumnos(als);
-      // Precargar presentes del mes seleccionado
+      // Precargar presentes y dias trabajados del mes seleccionado
       const p={};
+      let diasGuardados=null;
       res.forEach(r=>{
         const m=r.meses.find(x=>x.mes===mes);
-        if(m) p[r.id]=m.dias_presentes;
+        if(m){
+          p[r.id]=m.dias_presentes;
+          if(!diasGuardados&&m.dias_totales>0) diasGuardados=m.dias_totales;
+        }
       });
       setPresentes(p);
+      if(diasGuardados) setDiasTrabajados(diasGuardados);
       setLoading(false);
     }).catch(e=>{setErr(e.message);setLoading(false);});
   },[grado,curso]);
@@ -883,11 +888,16 @@ function Asistencia({user}){
     if(!grado||!curso||!alumnos.length) return;
     api('GET',`/asistencia/resumen/${encodeURIComponent(grado)}/${curso}`).then(res=>{
       const p={};
+      let diasGuardados=null;
       res.forEach(r=>{
         const m=r.meses.find(x=>x.mes===mes);
-        if(m) p[r.id]=m.dias_presentes;
+        if(m){
+          p[r.id]=m.dias_presentes;
+          if(!diasGuardados&&m.dias_totales>0) diasGuardados=m.dias_totales;
+        }
       });
       setPresentes(p);
+      if(diasGuardados) setDiasTrabajados(diasGuardados);
     });
   },[mes]);
 
