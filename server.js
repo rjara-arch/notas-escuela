@@ -126,11 +126,11 @@ try {
 function getAlumnos(grado, curso) {
   if (!matriculaDb) return [];
   return matriculaDb.prepare(`
-    SELECT id, nombres, apPaterno, apMaterno, run, dv, descGrado, curso, matricula, nivelMatricula
+    SELECT id, nombres, apPaterno, apMaterno, run, dv, descGrado, curso, matricula, nivelMatricula, posicionSige
     FROM students
     WHERE descGrado=? AND curso=?
       AND (fechaRetiro='1900-01-01' OR fechaRetiro IS NULL OR fechaRetiro='')
-    ORDER BY apPaterno, apMaterno, nombres
+    ORDER BY CASE WHEN posicionSige IS NULL OR posicionSige=999 THEN 9999 ELSE posicionSige END, apPaterno, apMaterno, nombres
   `).all(grado, curso);
 }
 
