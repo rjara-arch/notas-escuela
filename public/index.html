@@ -122,6 +122,7 @@ function Sidebar({user,view,setView,onLogout}){
     {id:'dashboard',label:'Inicio',icon:'🏠'},
     {id:'notas',label:'Libro de Notas',icon:'📝'},
     {id:'resumen',label:'Resumen Curso',icon:'📊'},
+    {id:'asistencia',label:'Asistencia',icon:'📅'},
     {id:'informe',label:'Informes',icon:'📄'},
     ...(user.role==='admin'||user.role==='directivo'?[{id:'metricas',label:'Métricas',icon:'📈'}]:[]),
     ...(user.role==='admin'?[
@@ -594,6 +595,7 @@ function Metricas({user}){
   if(!data) return <Spinner/>;
   return <div className="fadein">
     <h1 style={{fontSize:20,fontWeight:700,marginBottom:16}}>📈 Métricas Generales</h1>
+    <MetricasAsistencia/>
     <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(220px,1fr))',gap:12}}>
       {data.map(m=><div key={`${m.grado}${m.curso}`} style={{background:'#fff',borderRadius:12,padding:16,boxShadow:'0 1px 3px rgba(0,0,0,.06)'}}>
         <div style={{fontWeight:700,fontSize:13,color:'#1e293b',marginBottom:8}}>{m.grado} {m.curso}</div>
@@ -840,6 +842,208 @@ function AdminAsignaciones(){
   </div>
 }
 
+
+// ── Asistencia ────────────────────────────────────────────────────────────────
+function Asistencia({user}){
+  const [cursos,setCursos]=useState([]);
+  const [grado,setGrado]=useState('');
+  const [curso,setCurso]=useState('');
+  const [mes,setMes]=useState(new Date().getMonth()+1);
+  const [diasTrabajados,setDiasTrabajados]=useState(20);
+  const [alumnos,setAlumnos]=useState([]);
+  const [presentes,setPresentes]=useState({});
+  const [loading,setLoading]=useState(false);
+  const [saving,setSaving]=useState(false);
+  const [msg,setMsg]=useState('');
+  const [err,setErr]=useState('');
+  const [tab,setTab]=useState('ingreso'); // ingreso | resumen
+
+  useEffect(()=>{api('GET','/cursos').then(setCursos);},[]);
+
+  useEffect(()=>{
+    if(!grado||!curso) return;
+    setLoading(true);
+    Promise.all([
+      api('GET',`/alumnos/${encodeURIComponent(grado)}/${curso}`),
+      api('GET',`/asistencia/resumen/${encodeURIComponent(grado)}/${curso}`)
+    ]).then(([als,res])=>{
+      setAlumnos(als);
+      // Precargar presentes del mes seleccionado
+      const p={};
+      res.forEach(r=>{
+        const m=r.meses.find(x=>x.mes===mes);
+        if(m) p[r.id]=m.dias_presentes;
+      });
+      setPresentes(p);
+      setLoading(false);
+    }).catch(e=>{setErr(e.message);setLoading(false);});
+  },[grado,curso]);
+
+  useEffect(()=>{
+    if(!grado||!curso||!alumnos.length) return;
+    api('GET',`/asistencia/resumen/${encodeURIComponent(grado)}/${curso}`).then(res=>{
+      const p={};
+      res.forEach(r=>{
+        const m=r.meses.find(x=>x.mes===mes);
+        if(m) p[r.id]=m.dias_presentes;
+      });
+      setPresentes(p);
+    });
+  },[mes]);
+
+  async function guardar(){
+    setSaving(true);setErr('');
+    const registros=alumnos.map(a=>({student_id:a.id,dias_presentes:parseInt(presentes[a.id]||0)}));
+    try{
+      await api('POST','/asistencia/bulk',{mes,dias_trabajados:diasTrabajados,registros});
+      setMsg('✓ Asistencia guardada');setTimeout(()=>setMsg(''),2000);
+    }catch(e){setErr(e.message);}finally{setSaving(false);}
+  }
+
+  const mesNombre=MESES[mes-1];
+  const mesesEscolares=[3,4,5,6,7,8,9,10,11,12];
+
+  return <div className="fadein">
+    <h1 style={{fontSize:20,fontWeight:700,marginBottom:16}}>📅 Asistencia</h1>
+    <div style={{background:'#fff',borderRadius:14,padding:20,boxShadow:'0 1px 3px rgba(0,0,0,.06)',marginBottom:20}}>
+      <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(160px,1fr))',gap:12,alignItems:'end'}}>
+        <Field label="Curso">
+          <select style={sel} value={`${grado}|${curso}`} onChange={e=>{const[g,c]=e.target.value.split('|');setGrado(g);setCurso(c);setAlumnos([]);}}>
+            <option value="|">— Seleccionar —</option>
+            {cursos.map(c=><option key={`${c.descGrado}|${c.curso}`} value={`${c.descGrado}|${c.curso}`}>{c.descGrado} {c.curso}</option>)}
+          </select>
+        </Field>
+        <Field label="Mes">
+          <select style={sel} value={mes} onChange={e=>setMes(parseInt(e.target.value))}>
+            {mesesEscolares.map(m=><option key={m} value={m}>{MESES[m-1]}</option>)}
+          </select>
+        </Field>
+        <Field label="Días trabajados">
+          <input style={inp} type="number" min={1} max={31} value={diasTrabajados} onChange={e=>setDiasTrabajados(parseInt(e.target.value))}/>
+        </Field>
+      </div>
+    </div>
+
+    {grado&&curso&&<>
+      <div style={{display:'flex',gap:8,marginBottom:16}}>
+        {['ingreso','resumen'].map(t=><button key={t} onClick={()=>setTab(t)} style={{padding:'7px 16px',borderRadius:8,border:'none',background:tab===t?'#006847':'#f1f5f9',color:tab===t?'#fff':'#475569',fontWeight:tab===t?700:400,cursor:'pointer',fontSize:13}}>
+          {t==='ingreso'?'📝 Ingreso mensual':'📊 Resumen anual'}
+        </button>)}
+      </div>
+
+      <Alert type="error" msg={err}/>
+      {msg&&<Alert type="success" msg={msg}/>}
+
+      {loading?<Spinner/>:tab==='ingreso'?<>
+        <div style={{background:'#fff',borderRadius:14,boxShadow:'0 1px 3px rgba(0,0,0,.06)',overflow:'hidden',marginBottom:16}}>
+          <div style={{background:'#006847',color:'#fff',padding:'10px 16px',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+            <span style={{fontWeight:700}}>{grado} {curso} — {mesNombre}</span>
+            <span style={{fontSize:12}}>Días trabajados: {diasTrabajados}</span>
+          </div>
+          <table style={{width:'100%',borderCollapse:'collapse'}}>
+            <thead><tr style={{background:'#f8fafc'}}>
+              <th style={{padding:'8px 14px',textAlign:'left',fontSize:11,fontWeight:700,color:'#64748b',textTransform:'uppercase'}}>#</th>
+              <th style={{padding:'8px 14px',textAlign:'left',fontSize:11,fontWeight:700,color:'#64748b',textTransform:'uppercase'}}>Estudiante</th>
+              <th style={{padding:'8px 14px',textAlign:'center',fontSize:11,fontWeight:700,color:'#64748b',textTransform:'uppercase',width:100}}>Días presentes</th>
+              <th style={{padding:'8px 14px',textAlign:'center',fontSize:11,fontWeight:700,color:'#006847',textTransform:'uppercase',width:80}}>%</th>
+            </tr></thead>
+            <tbody>{alumnos.map((a,i)=>{
+              const p=parseInt(presentes[a.id]||0);
+              const pct=diasTrabajados>0?Math.round(p/diasTrabajados*100):0;
+              return <tr key={a.id} style={{borderBottom:'1px solid #f8fafc',background:i%2?'#fafafa':'#fff'}}>
+                <td style={{padding:'6px 14px',color:'#94a3b8',fontSize:12}}>{i+1}</td>
+                <td style={{padding:'6px 14px',fontWeight:500,fontSize:13}}>{a.apPaterno} {a.nombres}</td>
+                <td style={{padding:'6px 14px',textAlign:'center'}}>
+                  <input type="number" min={0} max={diasTrabajados} value={presentes[a.id]||''} placeholder="0"
+                    onChange={e=>setPresentes(p=>({...p,[a.id]:e.target.value}))}
+                    style={{width:70,padding:'5px 8px',border:`1.5px solid ${pct<85&&p>0?'#fca5a5':'#e2e8f0'}`,borderRadius:7,fontSize:13,textAlign:'center',outline:'none'}}/>
+                </td>
+                <td style={{padding:'6px 14px',textAlign:'center',fontWeight:700,color:p===0?'#94a3b8':pct>=85?'#15803d':pct>=75?'#ca8a04':'#dc2626'}}>
+                  {p>0?pct+'%':'—'}
+                </td>
+              </tr>
+            })}</tbody>
+          </table>
+        </div>
+        {user.role!=='directivo'&&<div style={{display:'flex',justifyContent:'flex-end'}}>
+          <Btn onClick={guardar} disabled={saving||!alumnos.length}>{saving?'Guardando…':'💾 Guardar asistencia'}</Btn>
+        </div>}
+      </>:<ResumenAsistencia grado={grado} curso={curso}/>}
+    </>}
+  </div>
+}
+
+function ResumenAsistencia({grado,curso}){
+  const [data,setData]=useState([]);
+  const [loading,setLoading]=useState(true);
+
+  useEffect(()=>{
+    api('GET',`/asistencia/resumen/${encodeURIComponent(grado)}/${curso}`)
+      .then(d=>{setData(d);setLoading(false);})
+      .catch(()=>setLoading(false));
+  },[grado,curso]);
+
+  if(loading) return <Spinner/>;
+  return <div style={{background:'#fff',borderRadius:14,boxShadow:'0 1px 3px rgba(0,0,0,.06)',overflow:'hidden'}}>
+    <table style={{width:'100%',borderCollapse:'collapse'}}>
+      <thead><tr style={{background:'#f8fafc'}}>
+        <th style={{padding:'8px 14px',textAlign:'left',fontSize:11,fontWeight:700,color:'#64748b',textTransform:'uppercase'}}>#</th>
+        <th style={{padding:'8px 14px',textAlign:'left',fontSize:11,fontWeight:700,color:'#64748b',textTransform:'uppercase'}}>Estudiante</th>
+        {[3,4,5,6,7,8,9,10,11,12].map(m=><th key={m} style={{padding:'8px 6px',textAlign:'center',fontSize:10,fontWeight:700,color:'#64748b',width:44}}>{MESES[m-1].slice(0,3)}</th>)}
+        <th style={{padding:'8px 12px',textAlign:'center',fontSize:11,fontWeight:700,color:'#006847',textTransform:'uppercase',width:60}}>% Anual</th>
+      </tr></thead>
+      <tbody>{data.map((a,i)=>{
+        const pct=a.pctAnual;
+        return <tr key={a.id} style={{borderBottom:'1px solid #f8fafc',background:i%2?'#fafafa':'#fff'}}>
+          <td style={{padding:'6px 14px',color:'#94a3b8',fontSize:12}}>{i+1}</td>
+          <td style={{padding:'6px 14px',fontWeight:500,fontSize:13}}>{a.apPaterno} {a.nombres}</td>
+          {[3,4,5,6,7,8,9,10,11,12].map(m=>{
+            const md=a.meses.find(x=>x.mes===m);
+            const p=md?Math.round(md.dias_presentes/md.dias_totales*100):null;
+            return <td key={m} style={{padding:'6px',textAlign:'center',fontSize:11,color:p===null?'#e2e8f0':p>=85?'#15803d':p>=75?'#ca8a04':'#dc2626',fontWeight:p?600:400}}>
+              {p!==null?p+'%':'—'}
+            </td>
+          })}
+          <td style={{padding:'6px 12px',textAlign:'center',fontWeight:700,fontSize:13,color:pct===null?'#94a3b8':pct>=85?'#15803d':pct>=75?'#ca8a04':'#dc2626',background:pct!==null?(pct>=85?'#dcfce7':pct>=75?'#fef9c3':'#fee2e2'):'transparent'}}>
+            {pct!==null?pct+'%':'—'}
+          </td>
+        </tr>
+      })}</tbody>
+    </table>
+  </div>
+}
+
+function MetricasAsistencia(){
+  const [data,setData]=useState(null);
+  useEffect(()=>{api('GET','/asistencia/metricas').then(setData).catch(()=>{});},[]);
+  if(!data) return <Spinner/>;
+  const sorted=[...data].filter(d=>d.pctPromedio!==null).sort((a,b)=>b.pctPromedio-a.pctPromedio);
+  return <div className="fadein">
+    <h2 style={{fontSize:16,fontWeight:700,marginBottom:16,color:'#1e293b'}}>📅 Asistencia por Curso</h2>
+    <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(200px,1fr))',gap:12,marginBottom:20}}>
+      {data.map(d=><div key={`${d.grado}${d.curso}`} style={{background:'#fff',borderRadius:12,padding:16,boxShadow:'0 1px 3px rgba(0,0,0,.06)'}}>
+        <div style={{fontWeight:700,fontSize:13,color:'#1e293b',marginBottom:6}}>{d.grado} {d.curso}</div>
+        <div style={{fontSize:28,fontWeight:700,color:d.pctPromedio===null?'#94a3b8':d.pctPromedio>=85?'#15803d':d.pctPromedio>=75?'#ca8a04':'#dc2626',marginBottom:6}}>
+          {d.pctPromedio!==null?d.pctPromedio+'%':'Sin datos'}
+        </div>
+        <div style={{fontSize:11,color:'#64748b'}}>Total: {d.total} alumnas</div>
+        {d.bajoMinimo>0&&<div style={{marginTop:6}}><Badge color='#991b1b' bg='#fee2e2'>{d.bajoMinimo} bajo 85%</Badge></div>}
+      </div>)}
+    </div>
+    {sorted.length>0&&<div style={{background:'#fff',borderRadius:14,padding:16,boxShadow:'0 1px 3px rgba(0,0,0,.06)'}}>
+      <h3 style={{fontSize:13,fontWeight:700,color:'#1e293b',marginBottom:12}}>Ranking de asistencia</h3>
+      {sorted.map((d,i)=><div key={`${d.grado}${d.curso}`} style={{display:'flex',alignItems:'center',gap:12,padding:'8px 0',borderBottom:'1px solid #f8fafc'}}>
+        <span style={{fontWeight:700,color:'#94a3b8',width:20,textAlign:'right'}}>{i+1}</span>
+        <span style={{flex:1,fontWeight:500,fontSize:13}}>{d.grado} {d.curso}</span>
+        <div style={{width:200,height:8,background:'#f1f5f9',borderRadius:4,overflow:'hidden'}}>
+          <div style={{width:d.pctPromedio+'%',height:'100%',background:d.pctPromedio>=85?'#15803d':d.pctPromedio>=75?'#ca8a04':'#dc2626',borderRadius:4,transition:'width .3s'}}/>
+        </div>
+        <span style={{fontWeight:700,color:d.pctPromedio>=85?'#15803d':d.pctPromedio>=75?'#ca8a04':'#dc2626',width:45,textAlign:'right'}}>{d.pctPromedio}%</span>
+      </div>)}
+    </div>}
+  </div>
+}
+
 // ── App principal ─────────────────────────────────────────────────────────────
 function App(){
   const [user,setUser]=useState(null);
@@ -861,6 +1065,7 @@ function App(){
     notas:<LibroNotas user={user}/>,
     resumen:<ResumenCurso user={user}/>,
     informe:<Informes user={user}/>,
+    asistencia:<Asistencia user={user}/>,
     metricas:<Metricas user={user}/>,
     'admin-users':<AdminUsers/>,
     'admin-asignaturas':<AdminAsignaturas/>,
