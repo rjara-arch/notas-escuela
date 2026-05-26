@@ -87,6 +87,14 @@ db.exec(`
     anio INTEGER NOT NULL DEFAULT 2026,
     fecha TEXT DEFAULT (datetime('now','localtime'))
   );
+
+  CREATE TABLE IF NOT EXISTS periodos (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    anio INTEGER NOT NULL DEFAULT 2026,
+    semestre INTEGER NOT NULL,
+    abierto INTEGER NOT NULL DEFAULT 1,
+    UNIQUE(anio, semestre)
+  );
 `);
 
 // ── Seed asignaturas ──────────────────────────────────────────────────────────
@@ -105,6 +113,12 @@ if (!db.prepare('SELECT id FROM asignaturas LIMIT 1').get()) {
     ['Religión',                       'Religión',    'conceptual', 'todos', 10],
     ['Orientación',                    'Orientación', 'conceptual', 'todos', 11],
   ].forEach(r => ins.run(...r));
+}
+
+// ── Seed periodos ────────────────────────────────────────────────────────────────
+if (!db.prepare('SELECT id FROM periodos LIMIT 1').get()) {
+  db.prepare('INSERT INTO periodos (anio,semestre,abierto) VALUES (?,?,?)').run(2026,1,1);
+  db.prepare('INSERT INTO periodos (anio,semestre,abierto) VALUES (?,?,?)').run(2026,2,1);
 }
 
 // ── Seed admin ────────────────────────────────────────────────────────────────
@@ -153,9 +167,14 @@ function requireRole(...roles) {
   };
 }
 
-function canWriteNotas(user, asignatura_id, grado, curso) {
+function canWriteNotas(user, asignatura_id, grado, curso, semestre) {
   if (user.role === 'admin') return true;
   if (user.role === 'directivo') return false;
+  // Check periodo abierto
+  if (semestre) {
+    const periodo = db.prepare('SELECT abierto FROM periodos WHERE anio=? AND semestre=?').get(ANIO, semestre);
+    if (periodo && !periodo.abierto) return false;
+  }
   const asig = db.prepare(
     'SELECT id FROM docente_asignaturas WHERE user_id=? AND asignatura_id=? AND grado=? AND curso=? AND anio=?'
   ).get(user.id, asignatura_id, grado, curso, ANIO);
@@ -360,8 +379,8 @@ app.get('/api/notas/:asignatura_id/:grado/:curso/:semestre', auth, (req, res) =>
 
 app.post('/api/notas', auth, (req, res) => {
   const { student_id, asignatura_id, semestre, numero_nota, valor, grado, curso } = req.body;
-  if (!canWriteNotas(req.user, asignatura_id, grado, curso))
-    return res.status(403).json({ error: 'No tienes esta asignatura asignada en este curso' });
+  if (!canWriteNotas(req.user, asignatura_id, grado, curso, semestre))
+    return res.status(403).json({ error: semestre && !db.prepare('SELECT abierto FROM periodos WHERE anio=? AND semestre=?').get(ANIO,parseInt(semestre))?.abierto ? 'El semestre '+semestre+' está cerrado' : 'No tienes esta asignatura asignada en este curso' });
   db.prepare(`
     INSERT INTO notas (student_id,asignatura_id,semestre,numero_nota,valor,user_id,anio)
     VALUES (?,?,?,?,?,?,?)
@@ -559,6 +578,17 @@ app.get('/api/metricas', auth, requireRole('admin','directivo'), (req, res) => {
     };
   });
   res.json(metricas);
+});
+
+// ── RUTAS PERIODOS ───────────────────────────────────────────────────────────
+app.get('/api/periodos', auth, (req, res) => {
+  res.json(db.prepare('SELECT * FROM periodos WHERE anio=? ORDER BY semestre').all(ANIO));
+});
+
+app.patch('/api/periodos/:semestre', auth, requireRole('admin'), (req, res) => {
+  const { abierto } = req.body;
+  db.prepare('INSERT OR REPLACE INTO periodos (anio,semestre,abierto) VALUES (?,?,?)').run(ANIO, parseInt(req.params.semestre), abierto ? 1 : 0);
+  res.json(db.prepare('SELECT * FROM periodos WHERE anio=? AND semestre=?').get(ANIO, parseInt(req.params.semestre)));
 });
 
 // ── ESTADÍSTICAS NOTAS PARA DASHBOARD ────────────────────────────────────────
