@@ -195,9 +195,19 @@ app.get('/api/cursos', auth, (req, res) => {
     SELECT DISTINCT descGrado, curso, nivelMatricula, codGrado
     FROM students
     WHERE fechaRetiro='1900-01-01' OR fechaRetiro IS NULL OR fechaRetiro=''
-    ORDER BY nivelMatricula DESC, CAST(codGrado AS INTEGER), curso
+    ORDER BY
+      CASE nivelMatricula WHEN 'P' THEN 0 ELSE 1 END,
+      CAST(codGrado AS INTEGER),
+      curso
   `).all();
-  res.json(all);
+  // Deduplicar por descGrado+curso
+  const seen = new Set();
+  const unique = all.filter(c => {
+    const key = c.descGrado+'|'+c.curso;
+    if(seen.has(key)) return false;
+    seen.add(key); return true;
+  });
+  res.json(unique);
 });
 
 app.get('/api/alumnos/:grado/:curso', auth, (req, res) => {
