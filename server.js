@@ -377,22 +377,55 @@ app.get('/api/asistencia/:grado/:curso', auth, (req, res) => {
   ).all(...alumnos, ANIO));
 });
 
+// Guardar asistencia individual
 app.post('/api/asistencia', auth, (req, res) => {
-  const { student_id, mes, dias_presentes, dias_totales, grado, curso } = req.body;
+  const { student_id, mes, dias_presentes, dias_totales } = req.body;
   if (req.user.role === 'directivo') return res.status(403).json({ error: 'Sin permiso' });
-  if (req.user.role !== 'admin') {
-    const jefe = db.prepare(
-      'SELECT id FROM docente_asignaturas WHERE user_id=? AND grado=? AND curso=? AND es_jefe=1 AND anio=?'
-    ).get(req.user.id, grado, curso, ANIO);
-    if (!jefe) return res.status(403).json({ error: 'Solo el profesor jefe puede registrar asistencia' });
-  }
-  db.prepare(`
-    INSERT INTO asistencia_mensual (student_id,mes,anio,dias_presentes,dias_totales)
-    VALUES (?,?,?,?,?)
-    ON CONFLICT(student_id,mes,anio)
-    DO UPDATE SET dias_presentes=excluded.dias_presentes, dias_totales=excluded.dias_totales
-  `).run(student_id, mes, ANIO, dias_presentes, dias_totales);
+  db.prepare(`INSERT INTO asistencia_mensual (student_id,mes,anio,dias_presentes,dias_totales) VALUES (?,?,?,?,?) ON CONFLICT(student_id,mes,anio) DO UPDATE SET dias_presentes=excluded.dias_presentes, dias_totales=excluded.dias_totales`).run(student_id, mes, ANIO, dias_presentes, dias_totales);
   res.json({ ok: true });
+});
+
+// Guardar asistencia curso completo (bulk)
+app.post('/api/asistencia/bulk', auth, (req, res) => {
+  if (req.user.role === 'directivo') return res.status(403).json({ error: 'Sin permiso' });
+  const { mes, dias_trabajados, registros } = req.body;
+  const stmt = db.prepare(`INSERT INTO asistencia_mensual (student_id,mes,anio,dias_presentes,dias_totales) VALUES (?,?,?,?,?) ON CONFLICT(student_id,mes,anio) DO UPDATE SET dias_presentes=excluded.dias_presentes, dias_totales=excluded.dias_totales`);
+  const run = db.transaction((rows) => { for (const r of rows) stmt.run(r.student_id, mes, ANIO, r.dias_presentes, dias_trabajados); });
+  run(registros);
+  res.json({ ok: true, guardados: registros.length });
+});
+
+// Resumen asistencia por curso
+app.get('/api/asistencia/resumen/:grado/:curso', auth, (req, res) => {
+  const grado = decodeURIComponent(req.params.grado);
+  const { curso } = req.params;
+  if (!canReadCurso(req.user, grado, curso)) return res.status(403).json({ error: 'Sin acceso' });
+  const alumnos = getAlumnos(grado, curso);
+  if (!alumnos.length) return res.json([]);
+  const ids = alumnos.map(a => a.id);
+  const asistencia = db.prepare(`SELECT * FROM asistencia_mensual WHERE student_id IN (${ids.map(()=>'?').join(',')}) AND anio=? ORDER BY mes`).all(...ids, ANIO);
+  const result = alumnos.map(a => {
+    const meses = asistencia.filter(x => x.student_id === a.id);
+    const totalP = meses.reduce((s,x)=>s+x.dias_presentes,0);
+    const totalD = meses.reduce((s,x)=>s+x.dias_totales,0);
+    return { ...a, meses, totalPresentes:totalP, totalDias:totalD, pctAnual: totalD>0 ? Math.round(totalP/totalD*100) : null };
+  });
+  res.json(result);
+});
+
+// Métricas asistencia todos los cursos
+app.get('/api/asistencia/metricas', auth, requireRole('admin','directivo'), (req, res) => {
+  if (!matriculaDb) return res.json([]);
+  const cursos = matriculaDb.prepare(`SELECT DISTINCT descGrado, curso, nivelMatricula, codGrado FROM students WHERE fechaRetiro='1900-01-01' OR fechaRetiro IS NULL OR fechaRetiro='' ORDER BY nivelMatricula DESC, CAST(codGrado AS INTEGER), curso`).all();
+  const result = cursos.map(c => {
+    const alumnos = getAlumnos(c.descGrado, c.curso);
+    const ids = alumnos.map(a=>a.id);
+    if (!ids.length) return { grado:c.descGrado, curso:c.curso, total:0, pctPromedio:null, bajoMinimo:0, conDatos:0 };
+    const asist = db.prepare(`SELECT student_id, SUM(dias_presentes) as tp, SUM(dias_totales) as td FROM asistencia_mensual WHERE student_id IN (${ids.map(()=>'?').join(',')}) AND anio=? GROUP BY student_id`).all(...ids, ANIO);
+    const pcts = asist.filter(x=>x.td>0).map(x=>Math.round(x.tp/x.td*100));
+    return { grado:c.descGrado, curso:c.curso, total:alumnos.length, pctPromedio: pcts.length?Math.round(pcts.reduce((s,v)=>s+v,0)/pcts.length):null, bajoMinimo:pcts.filter(p=>p<85).length, conDatos:pcts.length };
+  });
+  res.json(result);
 });
 
 // ── RUTAS OBSERVACIONES ───────────────────────────────────────────────────────
